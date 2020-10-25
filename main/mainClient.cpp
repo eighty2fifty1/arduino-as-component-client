@@ -17,7 +17,8 @@
 //////////////////////////////////////////////////////
 //////////////////////////////////////////////////////
 
-//#define NUMBER_OF_DEVICES 3
+#define STATUS_MSG_LEN 9       //length of status message, sent every _ seconds
+#define STATUS_MSG_INTERVAL 10 //status msg interval in seconds
 
 using namespace std;
 
@@ -44,10 +45,12 @@ void resetDevice();
 void sendSensorReport();
 void forceScan();
 void sensorSleep();
+void parseData();
+bool sensorTimeout(int); //receives sensor index and returns true if notification not received in 10 seconds
 
 String dataString;
-//string nameString = "iPhone Stand-in";
-
+array<char, STATUS_MSG_LEN> statusString;
+array<std::string, 6> macAddresses; //holds mac addresses relative to sensor position
 HardwareSerial MySerial(2);
 const ::byte numChars = 16;
 char receivedChars[numChars];
@@ -57,20 +60,24 @@ bool newData = false;
 //status message.  all are bool except number of sensors
 array<int, 9> status; //<reset, set number of sensors, send mac and rssi, force scan, sleep>
 
-int sensors = 4; //default for 2 axle.  should be stored in memory
+int sensorsExpected = 4; //default for 2 axle.  should be stored in memory
+int sensorsConnected = 0;
 
 class MyClientCallback : public BLEClientCallbacks
 {
     void onConnect(BLEClient *pClient)
     {
         Serial.print("onConnect to device: ");
-        Serial.println(pClient->getPeerAddress().toString().c_str());
+        Serial.print(pClient->getPeerAddress().toString().c_str());
+        Serial.print(" ");
+        sensorsConnected++;
     }
 
     void onDisconnect(BLEClient *pClient)
     {
         Serial.print("onDisconnect to: ");
         Serial.println(pClient->getPeerAddress().toString().c_str());
+        sensorsConnected--;
         //disconnectedDevices.push(pClient);
         //pClient->disconnect();
         //delete pClient;
@@ -88,6 +95,18 @@ static void processorStatistics()
     }
 }
 
+static void statusCheck()
+{
+    for (;;)
+    {
+        delay(STATUS_MSG_INTERVAL * 1000);
+
+        if (sensorsConnected != sensorsExpected)
+        {
+        }
+    }
+}
+
 static void notifyCallback(BLERemoteCharacteristic *pBLERemoteCharacteristic,
                            uint8_t *pData,
                            size_t length,
@@ -100,6 +119,16 @@ static void notifyCallback(BLERemoteCharacteristic *pBLERemoteCharacteristic,
     _pData[3] = *++pData; //batt pct byte
     tempData = (_pData[0] << 8) | _pData[1];
     dataList.push(tuple<uint16_t, uint8_t, uint8_t>(tempData, _pData[2], _pData[3]));
+
+    if (pBLERemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString() !=
+        macAddresses[_pData[2] - 1])
+    {
+        macAddresses[_pData[2] - 1] = pBLERemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString();
+        Serial.print("mac address stored for device ");
+        Serial.print(_pData[2]);
+        Serial.print(" ");
+        Serial.println(macAddresses[_pData[2] - 1].c_str());
+    }
 }
 
 static void coreBLEClient(BLEClient *pClient)
@@ -170,7 +199,7 @@ void app_main(void)
     Serial.println("Starting Arduino BLE Client application...");
     BLEDevice::init("");
 
-    PinnedTasks.push_back(xTaskCreatePinnedToCore([](void *p) { processorStatistics(); }, "stats", 4096, NULL, 5, NULL, tskNO_AFFINITY));
+    //PinnedTasks.push_back(xTaskCreatePinnedToCore([](void *p) { processorStatistics(); }, "stats", 4096, NULL, 5, NULL, tskNO_AFFINITY));
     scan();
 
     for (;;)
@@ -218,7 +247,7 @@ void serialRecv()
         strcpy(tempChars, receivedChars);
         // this temporary copy is necessary to protect the original data
         //   because strtok() used in parseData() replaces the commas with \0
-        //parseData();
+        parseData();
         //showParsedData();
         newData = false;
     }
@@ -290,9 +319,9 @@ void parseData()
     {
         if (status[1] > 0)
         {
-            if (sensors != status[1])
+            if (sensorsExpected != status[1])
             {
-                sensors = status[1];
+                sensorsExpected = status[1];
             }
         }
 
@@ -339,9 +368,10 @@ void forceReconnect(string addr)
 //saves expected number of sensors.  needs to save it in memory
 void setNumSensors(int s)
 {
-    sensors = s;
+    sensorsExpected = s;
 }
 
+//MAC address, RSSI
 void sendSensorReport()
 {
 }
